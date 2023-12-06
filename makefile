@@ -7,10 +7,8 @@ ALL=$(ALL_CPP) $(ALL_HPP)
 
 ut: main
 	./main unit-tests
-hb: main
-	./main hardcoded-benchmark
-fb: main
-	./main file-benchmark
+benchmark: main
+	./main benchmark
 
 main: $(ALL)
 	$(CXX) $(CXXFLAGS) -o $@ $(ALL_CPP) $(LDXXFLAGS)

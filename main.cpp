@@ -1,8 +1,8 @@
-#include <iostream>
 #include <algorithm>
+#include <cassert>
 #include <chrono>
-#include <random>
 #include <cstring>
+#include <iostream>
 
 constexpr int BLOCK_SIZE = 16;
 constexpr int FIELD_SIZE = 256;
@@ -175,7 +175,7 @@ void power(matrix_t mtx, uint32_t n) {
     multiply(mtx, mtx);
 }
 
-void precalc_lto(matrix_t L, uint8_t lto[BLOCK_SIZE][FIELD_SIZE][BLOCK_SIZE]) {
+void precalculate_lto(matrix_t L, uint8_t lto[BLOCK_SIZE][FIELD_SIZE][BLOCK_SIZE]) {
     power(L, 16);
 
     for (uint32_t i = 0; i < BLOCK_SIZE; ++i) {
@@ -187,7 +187,7 @@ void precalc_lto(matrix_t L, uint8_t lto[BLOCK_SIZE][FIELD_SIZE][BLOCK_SIZE]) {
     }
 }
 
-void finish_preprocessing() {
+void precalculate() {
     precalculate_mt();
 
     matrix_t L;
@@ -197,7 +197,7 @@ void finish_preprocessing() {
         }
     }
     std::memcpy(L[BLOCK_SIZE - 1], l_small, BLOCK_SIZE);
-    precalc_lto(L, LTO);
+    precalculate_lto(L, LTO);
 
     for (uint32_t j = 0; j < BLOCK_SIZE; ++j) {
         L[0][j] = l_small[(j + 1) % BLOCK_SIZE];
@@ -207,7 +207,7 @@ void finish_preprocessing() {
             L[i][j] = (i == j + 1);
         }
     }
-    precalc_lto(L, LTO_INV);
+    precalculate_lto(L, LTO_INV);
 }
 
 void apply_lto(v128_t block, uint8_t lto[BLOCK_SIZE][FIELD_SIZE][BLOCK_SIZE]) {
@@ -220,23 +220,13 @@ void apply_lto(v128_t block, uint8_t lto[BLOCK_SIZE][FIELD_SIZE][BLOCK_SIZE]) {
     std::memcpy(block, result, 16);
 }
 
-void l_transform(v128_t x) {
-    v128_t res = {0};
-    for (size_t i = 0; i < BLOCK_SIZE; ++i) {
-        for (size_t j = 0; j < BLOCK_SIZE; ++j) {
-            res[i] ^= LTO[j][x[j]][i];
-        }
-    }
-    std::memcpy(x, res, BLOCK_SIZE);
-}
-
 void f_transform(v128_t lr[2], v128_t key) {
     v128_t res;
     std::memcpy(res, lr[0], BLOCK_SIZE);
 
     xor_fast(lr[0], key);
     s_box(lr[0]);
-    l_transform(lr[0]);
+    apply_lto(lr[0], LTO);
     xor_fast(lr[0], lr[1]);
 
     std::memcpy(lr[1], res, BLOCK_SIZE);
@@ -247,7 +237,7 @@ void generate_keysequence(v128_t master_key[2]) {
     for (int i = 0; i < 32; ++i) {
         std::memset(c[i], 0, BLOCK_SIZE);
         c[i][0] = i + 1;
-        l_transform(c[i]);
+        apply_lto(c[i], LTO);
     }
 
     std::memcpy(KEY_SEQUENCE[0], master_key[0], BLOCK_SIZE);
@@ -287,50 +277,133 @@ void decrypt_block(v128_t block) {
     }
 }
 
-int main() {
-    v128_t master_key[2] = {
-            {0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe},
-            {0x77,0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88}
+void string_to_v128(const std::string& str, v128_t dest) {
+    assert(str.length() == 2 * 16);
+
+    auto convert = [](char digit) {
+        if (std::isalpha(digit)) {
+            return digit - 'a' + 10;
+        }
+        return digit - '0';
     };
-    finish_preprocessing();
-    generate_keysequence(master_key);
 
-    // generate 200 MB of random data for encrypt and decrypt test
-    auto data = new uint8_t[6400][2048][16];
+    for (size_t i = 0; i < str.length(); i += 2) {
+        size_t j = 15 - (i >> 1);
+        dest[j] = (convert(str[i]) << 4) + convert(str[i + 1]);
+    }
+}
 
-    std::random_device rd;
-    std::mt19937_64 g(rd());
-    std::uniform_int_distribution<std::uint8_t> dist(0, 255);
-    for (size_t i = 0; i < 6400 * 2048 * 16; ++i)
-        ((std::uint8_t*)data)[i] = dist(g);
+std::string to_string(v128_t x) {
+    auto convert = [](char digit) {
+        return (digit > 9 ? digit - 10 + 'a' : digit + '0');
+    };
 
-    auto test = new uint8_t[6400][2048][16];
-    std::memcpy((std::uint8_t*)test, (std::uint8_t*)data, 6400 * 2048 * 16);
+    std::string str(32, 'x');
+    for (size_t i = 0; i < str.length(); i += 2) {
+        size_t j = 15 - (i >> 1);
+        str[i] = convert(x[j] >> 4);
+        str[i + 1] = convert(x[j] & 15);
+    }
 
-    std::cout << "START ENCRYPT\n";
-    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+    return str;
+}
+
+inline void encrypt_data(v128_t data[6400][2048]) {
     for (size_t i = 0; i < 6400; ++i) {
         for (size_t j = 0; j < 2048; ++j) {
             encrypt_block(data[i][j]);
         }
     }
+}
 
-    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-    std::cout << "Encrypt took = " << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
-    << "[ms]" << std::endl;
-
-    // test correctness
+void decrypt_data(v128_t data[6400][2048]) {
     for (size_t i = 0; i < 6400; ++i) {
         for (size_t j = 0; j < 2048; ++j) {
             decrypt_block(data[i][j]);
-            for (size_t k = 0; k < 16; ++k) {
-                if (data[i][j][k] != test[i][j][k]) {
-                    std::clog << "MISMATCH " << i << ' ' << j << ' ' << k << std::endl;
-                }
+        }
+    }
+}
+
+void run_correctness_checks() {
+    std::cout << "running correcteness checks..." << std::endl;
+
+    assert(PI[31] == 193);
+    assert(MT[128][3] == 67);
+
+    auto data = new uint8_t[64][256][BLOCK_SIZE];
+    auto initial_data = new uint8_t[64][256][BLOCK_SIZE];
+    std::memcpy((uint8_t *)initial_data, (uint8_t *)data, 64 * 256 * BLOCK_SIZE);
+
+    for (int it = 0; it < 6; ++it) {
+        for (size_t i = 0; i < 64; ++i) {
+            for (size_t j = 0; j < 256; ++j) {
+                encrypt_block(data[i][j]);
             }
         }
     }
-    std::cout << "ENCRYPT AND DECRYPT ARE CORRECT!\n";
+
+    for (size_t i = 0; i < 64; ++i) {
+        for (size_t j = 0; j < 256; ++j) {
+            for (int it = 0; it < 6; ++it) {
+                decrypt_block(data[i][j]);
+            }
+            for (size_t k = 0; k < BLOCK_SIZE; ++k) {
+                assert(data[i][j][k] == initial_data[i][j][k]);
+            }
+        }
+    }
+
     delete[] data;
-    return 0;
+
+    std::cout << "correctness checks passed" << std::endl;
+}
+
+inline void run_benchmark() {
+    auto data = new uint8_t[64][256][BLOCK_SIZE];
+
+    std::cout << "encrypting...\n";
+    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+    for (int it = 0; it < 800; ++it) {
+        for (size_t i = 0; i < 64; ++i) {
+            for (size_t j = 0; j < 256; ++j) {
+                encrypt_block(data[i][j]);
+            }
+        }
+    }
+
+    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+    std::cout << "encryption lasted " << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
+    << "ms" << std::endl;
+
+    delete[] data;
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        printf("there must be one argument\n");
+        printf("usage: %s <unit-tests / benchmark>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    precalculate();
+
+    v128_t master_key[2];
+    string_to_v128("8899aabbccddeeff0011223344556677", master_key[0]);
+    string_to_v128("fedcba98765432100123456789abcdef", master_key[1]);
+    generate_keysequence(master_key);
+
+
+    if (strcmp(argv[1], "unit-tests") == 0) {
+        run_correctness_checks();
+        return 0;
+    }
+
+    if (strcmp(argv[1], "benchmark") == 0) {
+        run_benchmark();
+        return 0;
+    }
+
+    printf("unknown argument\n");
+    printf("usage: %s <unit-tests / benchmark>\n", argv[0]);
+    exit(EXIT_FAILURE);
 }
