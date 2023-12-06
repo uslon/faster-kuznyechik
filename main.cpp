@@ -330,6 +330,16 @@ void run_correctness_checks() {
     assert(PI[31] == 193);
     assert(MT[128][3] == 67);
 
+    v128_t a;
+    string_to_v128("1122334455667700ffeeddccbbaa9988", a);
+    v128_t b;
+    string_to_v128("7f679d90bebc24305a468d42b9d4edcd", b);
+
+    encrypt_block(a);
+    for (size_t i = 0; i < BLOCK_SIZE; ++i) {
+        assert(a[i] == b[i]);
+    }
+
     auto data = new uint8_t[64][256][BLOCK_SIZE];
     auto initial_data = new uint8_t[64][256][BLOCK_SIZE];
     std::memcpy((uint8_t *)initial_data, (uint8_t *)data, 64 * 256 * BLOCK_SIZE);
