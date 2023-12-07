@@ -12,6 +12,7 @@ using matrix_t = uint8_t[BLOCK_SIZE][BLOCK_SIZE];
 
 uint8_t MT[FIELD_SIZE][FIELD_SIZE];
 v128_t LTO[BLOCK_SIZE][FIELD_SIZE];
+v128_t LTU[BLOCK_SIZE][FIELD_SIZE];
 v128_t LTO_INV[BLOCK_SIZE][FIELD_SIZE];
 v128_t KEY_SEQUENCE[10];
 
@@ -187,6 +188,16 @@ void precalculate_lto(matrix_t L, uint8_t lto[BLOCK_SIZE][FIELD_SIZE][BLOCK_SIZE
     }
 }
 
+void precalculate_ltu(matrix_t L, const uint8_t pi[FIELD_SIZE] = PI, bool forward = true) {
+    for (uint32_t i = 0; i < BLOCK_SIZE; ++i) {
+        for (uint32_t j = 0; j < BLOCK_SIZE; ++j) {
+            for (uint32_t x = 0; x < FIELD_SIZE; ++x) {
+                LTU[j][x][i] = forward ? MT[L[i][j]][pi[x]] : pi[MT[L[i][j]][x]];
+            }
+        }
+    }
+}
+
 void precalculate() {
     precalculate_mt();
 
@@ -198,6 +209,7 @@ void precalculate() {
     }
     std::memcpy(L[BLOCK_SIZE - 1], l_small, BLOCK_SIZE);
     precalculate_lto(L, LTO);
+    precalculate_ltu(L, PI, true);
 
     for (uint32_t j = 0; j < BLOCK_SIZE; ++j) {
         L[0][j] = l_small[(j + 1) % BLOCK_SIZE];
@@ -208,16 +220,17 @@ void precalculate() {
         }
     }
     precalculate_lto(L, LTO_INV);
+
 }
 
 void apply_lto(v128_t block, uint8_t lto[BLOCK_SIZE][FIELD_SIZE][BLOCK_SIZE]) {
-    uint8_t result[16] = {};
-    for (uint8_t i = 0; i < 16; ++i) {
-        for (uint8_t first_ind = 0; first_ind < 16; ++first_ind) {
-            result[first_ind] ^= lto[i][block[i]][first_ind];
+    uint8_t result[BLOCK_SIZE] = {};
+    for (uint8_t i = 0; i < BLOCK_SIZE; ++i) {
+        for (uint8_t j = 0; j < BLOCK_SIZE; ++j) {
+            result[j] ^= lto[i][block[i]][j];
         }
     }
-    std::memcpy(block, result, 16);
+    std::memcpy(block, result, BLOCK_SIZE);
 }
 
 void f_transform(v128_t lr[2], v128_t key) {
@@ -254,25 +267,25 @@ void generate_keysequence(v128_t master_key[2]) {
 
 void encrypt_block(v128_t block) {
     for (uint8_t i = 0; i < 9; ++i) {
-        for (uint8_t idx = 0; idx < 16; ++idx) {
-            block[idx] = PI[block[idx] ^ KEY_SEQUENCE[i][idx]];
+        for (uint8_t j = 0; j < BLOCK_SIZE; ++j) {
+            block[j] ^= KEY_SEQUENCE[i][j];
         }
-        apply_lto(block, LTO);
+        apply_lto(block, LTU);
     }
     // xor_fast(block, KEY_SEQUENCE[9]);
-    for (uint8_t idx = 0; idx < 16; ++idx) {
-        block[idx] ^= KEY_SEQUENCE[9][idx];
+    for (uint8_t i = 0; i < BLOCK_SIZE; ++i) {
+        block[i] ^= KEY_SEQUENCE[9][i];
     }
 }
 
 void decrypt_block(v128_t block) {
-    for (uint8_t idx = 0; idx < 16; ++idx) {
-        block[idx] ^= KEY_SEQUENCE[9][idx];
+    for (uint8_t i = 0; i < BLOCK_SIZE; ++i) {
+        block[i] ^= KEY_SEQUENCE[9][i];
     }
     for (int8_t i = 8; i >= 0; --i) {
         apply_lto(block, LTO_INV);
-        for (uint8_t idx = 0; idx < 16; ++idx) {
-            block[idx] = PI_INV[block[idx]] ^ KEY_SEQUENCE[i][idx];
+        for (uint8_t j = 0; j < BLOCK_SIZE; ++j) {
+            block[j] = PI_INV[block[j]] ^ KEY_SEQUENCE[i][j];
         }
     }
 }
@@ -306,22 +319,6 @@ std::string to_string(v128_t x) {
     }
 
     return str;
-}
-
-inline void encrypt_data(v128_t data[6400][2048]) {
-    for (size_t i = 0; i < 6400; ++i) {
-        for (size_t j = 0; j < 2048; ++j) {
-            encrypt_block(data[i][j]);
-        }
-    }
-}
-
-void decrypt_data(v128_t data[6400][2048]) {
-    for (size_t i = 0; i < 6400; ++i) {
-        for (size_t j = 0; j < 2048; ++j) {
-            decrypt_block(data[i][j]);
-        }
-    }
 }
 
 void run_correctness_checks() {
@@ -371,9 +368,17 @@ void run_correctness_checks() {
 inline void run_benchmark() {
     auto data = new uint8_t[64][256][BLOCK_SIZE];
 
+    for (size_t i = 0; i < 64; ++i) {
+        for (size_t j = 0; j < 256; ++j) {
+            for (size_t k = 0; k < BLOCK_SIZE; ++k) {
+                data[i][j][k] = i ^ j;
+            }
+        }
+    }
+
     std::cout << "encrypting...\n";
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    for (int it = 0; it < 800; ++it) {
+    for (int it = 0; it < 1600; ++it) {
         for (size_t i = 0; i < 64; ++i) {
             for (size_t j = 0; j < 256; ++j) {
                 encrypt_block(data[i][j]);
@@ -382,7 +387,7 @@ inline void run_benchmark() {
     }
 
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-    std::cout << "encryption lasted " << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
+    std::cout << "encryption finished in " << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count()
     << "ms" << std::endl;
 
     delete[] data;
