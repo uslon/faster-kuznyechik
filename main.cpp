@@ -272,7 +272,6 @@ void encrypt_block(v128_t block) {
         }
         apply_lto(block, LTU);
     }
-    // xor_fast(block, KEY_SEQUENCE[9]);
     for (uint8_t i = 0; i < BLOCK_SIZE; ++i) {
         block[i] ^= KEY_SEQUENCE[9][i];
     }
@@ -321,6 +320,16 @@ std::string to_string(v128_t x) {
     return str;
 }
 
+void prepare_data(uint8_t data[64][256][BLOCK_SIZE]) {
+    for (size_t i = 0; i < 64; ++i) {
+        for (size_t j = 0; j < 256; ++j) {
+            for (size_t k = 0; k < BLOCK_SIZE; ++k) {
+                data[i][j][k] = i ^ j;
+            }
+        }
+    }
+}
+
 void run_correctness_checks() {
     std::cout << "running correcteness checks..." << std::endl;
 
@@ -338,6 +347,7 @@ void run_correctness_checks() {
     }
 
     auto data = new uint8_t[64][256][BLOCK_SIZE];
+    prepare_data(data);
     auto initial_data = new uint8_t[64][256][BLOCK_SIZE];
     std::memcpy((uint8_t *)initial_data, (uint8_t *)data, 64 * 256 * BLOCK_SIZE);
 
@@ -365,16 +375,9 @@ void run_correctness_checks() {
     std::cout << "correctness checks passed" << std::endl;
 }
 
-inline void run_benchmark() {
+void run_benchmark() {
     auto data = new uint8_t[64][256][BLOCK_SIZE];
-
-    for (size_t i = 0; i < 64; ++i) {
-        for (size_t j = 0; j < 256; ++j) {
-            for (size_t k = 0; k < BLOCK_SIZE; ++k) {
-                data[i][j][k] = i ^ j;
-            }
-        }
-    }
+    prepare_data(data);
 
     std::cout << "encrypting...\n";
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
